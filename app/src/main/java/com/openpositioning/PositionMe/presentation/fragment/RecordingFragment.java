@@ -301,6 +301,13 @@ public class RecordingFragment extends Fragment {
                 trajectoryMapFragment.clearGNSS();
             }
         }
+        // WiFi observation logic for colour-coded last N updates
+        if (trajectoryMapFragment != null) {
+            LatLng wifiLocation = sensorFusion.getLatLngWifiPositioning();
+            if (wifiLocation != null) {
+                trajectoryMapFragment.updateWiFiObservation(wifiLocation);
+            }
+        }
 
         // Update previous
         previousPosX = pdrValues[0];

@@ -33,6 +33,9 @@ import com.google.android.gms.maps.model.*;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.google.android.gms.maps.model.Circle;
+import com.google.android.gms.maps.model.CircleOptions;
+
 
 /**
  * A fragment responsible for displaying a trajectory map using Google Maps.
@@ -90,6 +93,7 @@ public class TrajectoryMapFragment extends Fragment {
     private Spinner switchMapSpinner;
 
     private SwitchMaterial gnssSwitch;
+
     private SwitchMaterial autoFloorSwitch;
 
     private com.google.android.material.floatingactionbutton.FloatingActionButton floorUpButton, floorDownButton;
@@ -97,10 +101,55 @@ public class TrajectoryMapFragment extends Fragment {
     private Button switchColorButton;
     private Polygon buildingPolygon;
 
+    // --- Last N observation display state ---
+    private static final int MAX_OBSERVATIONS = 20;
+
+    // Rolling histories of absolute position updates
+    private final List<LatLng> gnssHistory = new ArrayList<>();
+    private final List<LatLng> wifiHistory = new ArrayList<>();
+    private final List<LatLng> pdrHistory = new ArrayList<>();
+
+    // Rendered map circles for each source, so they can be removed/redrawn cleanly
+    private final List<Circle> gnssCircles = new ArrayList<>();
+    private final List<Circle> wifiCircles = new ArrayList<>();
+    private final List<Circle> pdrCircles = new ArrayList<>();
+
+    // Optional UI switches for visibility control
+    private SwitchMaterial wifiSwitch;
+    private SwitchMaterial pdrSwitch;
+
+    /**
+     * Adds a new position observation to a rolling history list.
+     * Maintains only the most recent MAX_OBSERVATIONS points.
+     *
+     * @param history The list storing past observations (GNSS, WiFi, or PDR)
+     * @param point   The new LatLng position to add
+     */
+    private void addObservation(List<LatLng> history, LatLng point) {
+
+        // Ignore null points (e.g., when a sensor has no valid reading)
+        if (point == null) return;
+
+        // Add the new observation to the history
+        history.add(point);
+
+        // If we exceed the maximum allowed observations,
+        // remove the oldest point (FIFO behaviour)
+        if (history.size() > MAX_OBSERVATIONS) {
+            history.remove(0);
+        }
+    }
+
+
+
+
 
     public TrajectoryMapFragment() {
         // Required empty public constructor
     }
+
+
+
 
     @Nullable
     @Override
@@ -119,6 +168,8 @@ public class TrajectoryMapFragment extends Fragment {
         // Grab references to UI controls
         switchMapSpinner = view.findViewById(R.id.mapSwitchSpinner);
         gnssSwitch      = view.findViewById(R.id.gnssSwitch);
+        wifiSwitch = view.findViewById(R.id.wifiSwitch);
+        pdrSwitch = view.findViewById(R.id.pdrSwitch);
         autoFloorSwitch = view.findViewById(R.id.autoFloor);
         floorUpButton   = view.findViewById(R.id.floorUpButton);
         floorDownButton = view.findViewById(R.id.floorDownButton);
@@ -166,7 +217,18 @@ public class TrajectoryMapFragment extends Fragment {
                 gnssMarker.remove();
                 gnssMarker = null;
             }
+            redrawObservationOverlays();
         });
+
+        wifiSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            redrawObservationOverlays();
+        });
+
+        pdrSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            redrawObservationOverlays();
+        });
+
+
 
         // Color switch
         switchColorButton.setOnClickListener(v -> {
@@ -209,6 +271,77 @@ public class TrajectoryMapFragment extends Fragment {
                 updateFloorLabel();
             }
         });
+    }
+
+    /**
+     * Redraws the colour-coded observation circles for GNSS, WiFi, and PDR.
+     * Only sources enabled by their switches are displayed.
+     */
+    private void redrawObservationOverlays() {
+        if (gMap == null) return;
+
+        clearObservationCircles();
+
+        if (gnssSwitch != null && gnssSwitch.isChecked()) {
+            drawHistory(gnssHistory, gnssCircles, Color.BLUE);
+        }
+
+        if (wifiSwitch != null && wifiSwitch.isChecked()) {
+            drawHistory(wifiHistory, wifiCircles, Color.GREEN);
+        }
+
+        if (pdrSwitch != null && pdrSwitch.isChecked()) {
+            drawHistory(pdrHistory, pdrCircles, Color.RED);
+        }
+    }
+
+    /**
+     * Draws one rolling history of observations on the map as circles.
+     * Older observations are faded, newer ones are more visible.
+     *
+     * @param history  The observation points to render
+     * @param rendered The list of Circle references currently on the map
+     * @param color    The base colour for this data source
+     */
+    private void drawHistory(List<LatLng> history, List<Circle> rendered, int color) {
+        for (int i = 0; i < history.size(); i++) {
+            LatLng point = history.get(i);
+
+            int alpha = (int) (255f * (i + 1) / history.size());
+            int fadedColor = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+
+            Circle circle = gMap.addCircle(new CircleOptions()
+                    .center(point)
+                    .radius(1.5)
+                    .strokeWidth(2f)
+                    .strokeColor(fadedColor)
+                    .fillColor(fadedColor));
+
+            rendered.add(circle);
+        }
+    }
+
+    /**
+     * Removes all currently displayed observation circles from the map.
+     */
+    private void clearObservationCircles() {
+        removeAll(gnssCircles);
+        removeAll(wifiCircles);
+        removeAll(pdrCircles);
+    }
+
+    /**
+     * Removes every circle in the provided list from the map and clears the list.
+     *
+     * @param circles The rendered circles to remove
+     */
+    private void removeAll(List<Circle> circles) {
+        for (Circle circle : circles) {
+            if (circle != null) {
+                circle.remove();
+            }
+        }
+        circles.clear();
     }
 
     /**
@@ -301,6 +434,36 @@ public class TrajectoryMapFragment extends Fragment {
     }
 
     /**
+     * Adds a GNSS observation to the rolling history and redraws the overlays.
+     *
+     * @param point New GNSS position
+     */
+    public void addGnssObservation(@NonNull LatLng point) {
+        addObservation(gnssHistory, point);
+        redrawObservationOverlays();
+    }
+
+    /**
+     * Adds a WiFi observation to the rolling history and redraws the overlays.
+     *
+     * @param point New WiFi-derived position
+     */
+    public void addWifiObservation(@NonNull LatLng point) {
+        addObservation(wifiHistory, point);
+        redrawObservationOverlays();
+    }
+
+    /**
+     * Adds a PDR observation to the rolling history and redraws the overlays.
+     *
+     * @param point New PDR-derived position
+     */
+    public void addPdrObservation(@NonNull LatLng point) {
+        addObservation(pdrHistory, point);
+        redrawObservationOverlays();
+    }
+
+    /**
      * Update the user's current location on the map, create or move orientation marker,
      * and append to polyline if the user actually moved.
      *
@@ -309,6 +472,9 @@ public class TrajectoryMapFragment extends Fragment {
      */
     public void updateUserLocation(@NonNull LatLng newLocation, float orientation) {
         if (gMap == null) return;
+
+        addObservation(pdrHistory, newLocation);
+        redrawObservationOverlays();
 
         // Keep track of current location
         LatLng oldLocation = this.currentLocation;
@@ -418,6 +584,8 @@ public class TrajectoryMapFragment extends Fragment {
      */
     public void updateGNSS(@NonNull LatLng gnssLocation) {
         if (gMap == null) return;
+        addObservation(gnssHistory, gnssLocation);
+        redrawObservationOverlays();
         if (!isGnssOn) return;
 
         if (gnssMarker == null) {
@@ -442,6 +610,10 @@ public class TrajectoryMapFragment extends Fragment {
         }
     }
 
+    public void updateWiFiObservation(@NonNull LatLng wifiLocation) {
+        addObservation(wifiHistory, wifiLocation);
+        redrawObservationOverlays();
+    }
 
     /**
      * Remove GNSS marker if user toggles it off
@@ -507,8 +679,15 @@ public class TrajectoryMapFragment extends Fragment {
         for (Marker m : testPointMarkers) {
             m.remove();
         }
+
+        //clear rolling observation histories
         testPointMarkers.clear();
 
+        // remove coloured observation circles from map
+        gnssHistory.clear();
+        wifiHistory.clear();
+        pdrHistory.clear();
+        clearObservationCircles();
 
         // Re-create empty polylines with your chosen colors
         if (gMap != null) {
